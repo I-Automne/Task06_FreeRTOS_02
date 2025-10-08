@@ -60,44 +60,69 @@ void MX_FREERTOS_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-
+	uint16_t str2int(uint8_t *str); //字符数字转换函数声明
+	
+	extern DMA_HandleTypeDef hdma_usart1_rx;
+	uint8_t Unsure_Message[16];
+		QueueHandle_t xUartQueue;
+    QueueHandle_t xParamQueue; 
 
 
 
 
 //////////////////////////////////////////////////////////任务函数实现区///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////Tips：查了configTICK_RATE_HZ值为默认1000 也就是1Tick为1ms///////////////////////////////////////////////////////////////
 void vPWMTask(void *pvParameters) {
-	uint16_t CCRX = 0;						//占空比
+	uint16_t MAXCCRX = 499;				//最大CCRX
+	uint16_t CCRX = 0;						//占空比调节
 	uint8_t Direction = 0;				//方向 0为增1为减
 	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1); // 启动TIM3_CH1的PWM输出
+	uint8_t Zero_Flag = 0;
+	
+	TickType_t xLastWakeTime;  // 存储上一次唤醒时间
+	xLastWakeTime = xTaskGetTickCount();  // 初始化：获取当前系统节拍数
+	
 	while (1)
-  {
-		if(CCRX==499 && Direction==0) Direction=1;
+  {	
+		Zero_Flag = 0;
+		if(xQueueReceive(xParamQueue, &MAXCCRX, 0) == pdTRUE) {
+		CCRX = 0;	//每次接受就重启一下
+		Direction = 0;	
+		printf("Received MAXCCRX=%d\n", MAXCCRX);
+}
+		if(CCRX==MAXCCRX && Direction==0) Direction=1;
 		if(CCRX==0 && Direction==1) Direction=0;
+		if(CCRX==MAXCCRX && Direction==0 && CCRX==0) Zero_Flag = 1;	//MAXCCRX = 0的情况有点无解 只能写个标识来防了
+
+		if(Zero_Flag == 0){
 		if(Direction==0){
 			CCRX += 1;
 		}
 		else{
 			CCRX -= 1;
 		}
+	}
 		__HAL_TIM_SetCompare(&htim3,TIM_CHANNEL_1,CCRX);
-		osDelay(2);
+		vTaskDelayUntil(&xLastWakeTime,pdMS_TO_TICKS(2));
   }
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void vUARTTask(void *pvParameters) {
-	uint8_t textbuf[10];
-	uint8_t message[]="OK";
-  while (1)
-  {	
-		if(HAL_UART_Receive(&huart1,textbuf,sizeof(textbuf),1000) == HAL_OK ){
-		HAL_UART_Transmit(&huart1,textbuf,sizeof(textbuf),1000);
-		HAL_UART_Transmit(&huart1,message,sizeof(message),1000);
-		}
-  }
+void vUARTTask(void *pvParameters) {			//UART任务
+    uint8_t UART_QueneMessage[16];
+    uint16_t bright;
+
+    while(1) {
+        if (xQueueReceive(xUartQueue, UART_QueneMessage, portMAX_DELAY) == pdPASS) {
+            // 直接把数字字符串转成整数
+						printf("xUartQueue is Receive\n");
+            bright = str2int(UART_QueneMessage);
+						printf("Received bright=%d\n", bright);
+
+            // 发送到亮度队列
+            xQueueSend(xParamQueue, &bright, 0);
+        }
+    }
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -105,17 +130,35 @@ void vMPU6050Task(void *pvParameters) {
 	float accel[3], gyro[3];			//角速度 加速度
 	float pitch,roll,yaw;
 	int ret = 0;
-	HAL_Delay(5000);
+	vTaskDelay(pdMS_TO_TICKS(5000));
 	printf("MPU6050 initing......\n");
 	do{
 		ret = MPU6050_DMP_init();
 	}while(ret);
 	if(MPU6050_DMP_init()==0) printf("MPU6050 init success!\n");
-}
+
 	uint8_t Check_MODE = 0;				//查阅模式 0为六轴 1为欧拉角
 
-
-
+	TickType_t xLastWakeTime;  // 存储上一次唤醒时间
+	xLastWakeTime = xTaskGetTickCount();  // 初始化：获取当前系统节拍数
+	
+  while (1){
+	if(Check_MODE == 0){
+		if (MPU6050_DMP_Get6Axis_f(accel, gyro) == 0){
+    printf("AX:%.3f AY:%.3f AZ:%.3f  GX:%.3f GY:%.3f GZ:%.3f\n",
+           accel[0], accel[1], accel[2],
+           gyro[0], gyro[1], gyro[2]);
+			}
+		vTaskDelayUntil(&xLastWakeTime,pdMS_TO_TICKS(100));
+		}
+	if(Check_MODE == 1){
+		if (MPU6050_DMP_Get_Date(&pitch, &roll, &yaw) == 0){
+    printf("Pitch: %.2f, Roll: %.2f, Yaw: %.2f\r\n", pitch, roll, yaw);
+			}
+		vTaskDelayUntil(&xLastWakeTime,pdMS_TO_TICKS(100));
+		}
+	}
+}
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -160,11 +203,18 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
+//////////////////////////////////////////////////////////DMA初始化//////////////////////////////////////////////////////////////
+		HAL_UARTEx_ReceiveToIdle_DMA(&huart1,Unsure_Message,sizeof(Unsure_Message));
+	__HAL_DMA_DISABLE_IT(&hdma_usart1_rx,DMA_IT_HT);
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////任务区/////////////////////////////////////////////////////////////
 		TaskHandle_t PWM_TaskHandle = NULL;
 		TaskHandle_t UART_TaskHandle = NULL;
 		TaskHandle_t MPU6050_TaskHandle = NULL;
+		xUartQueue  = xQueueCreate(10, sizeof(Unsure_Message));
+    xParamQueue = xQueueCreate(10, sizeof(uint16_t));
+
 	
 	
 		xTaskCreate(	
@@ -173,7 +223,7 @@ int main(void)
         128,            // 栈大小（128字=512字节）
         NULL,           // 不传递参数
         1,              // 优先级1
-        &PWM_TaskHandle            // 不保存句柄
+        &PWM_TaskHandle          
     );
 	xTaskCreate(	
         vUARTTask,       // 任务函数
@@ -181,15 +231,15 @@ int main(void)
         128,            // 栈大小（128字=512字节）
         NULL,           // 不传递参数
         1,              // 优先级1
-        &UART_TaskHandle            // 不保存句柄
+        &UART_TaskHandle           
     );
 			xTaskCreate(	
         vMPU6050Task,       // 任务函数
-        "UART",    // 任务名称
+        "MPU6050",    // 任务名称
         128,            // 栈大小（128字=512字节）
         NULL,           // 不传递参数
-        1,              // 优先级1
-        &MPU6050_TaskHandle            // 不保存句柄
+        2,              // 优先级1
+        &MPU6050_TaskHandle         
     );
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -208,23 +258,6 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-	if(Check_MODE == 0){
-		if (MPU6050_DMP_Get6Axis_f(accel, gyro) == 0){
-    printf("AX:%.3f AY:%.3f AZ:%.3f  GX:%.3f GY:%.3f GZ:%.3f\n",
-           accel[0], accel[1], accel[2],
-           gyro[0], gyro[1], gyro[2]);
-	}
-		HAL_Delay(100);
-}
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-	if(Check_MODE == 1){
-		if (MPU6050_DMP_Get_Date(&pitch, &roll, &yaw) == 0){
-    printf("Pitch: %.2f, Roll: %.2f, Yaw: %.2f\r\n", pitch, roll, yaw);
-	}
-		HAL_Delay(100);
-}
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -271,6 +304,19 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+/////////////////////////////////////////////////////DMA中断实现/////////////////////////////////////////////////////////////////////////////////////////////
+	void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart,uint16_t Size){
+			if(huart == &huart1){
+			printf("huart1 is Receive\n");
+      BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+      xQueueSendFromISR(xUartQueue, Unsure_Message, &xHigherPriorityTaskWoken);		//有数据进来 就传到UART队列
+				
+      HAL_UARTEx_ReceiveToIdle_DMA(&huart1,Unsure_Message,sizeof(Unsure_Message));	//接受下一轮数据
+			__HAL_DMA_DISABLE_IT(&hdma_usart1_rx,DMA_IT_HT);
+			portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+}
+/////////////////////////////////////////////////////printf重写实现/////////////////////////////////////////////////////////////////////////////////////////
 #ifdef __GNUC__
 #define PUTCHAR_PROTOTYPE int __io_putchar(int ch)
 #else
@@ -281,6 +327,19 @@ PUTCHAR_PROTOTYPE
     HAL_UART_Transmit(&huart1 , (uint8_t *)&ch, 1, 0xFFFF);
     return ch;
 }
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+uint16_t str2int(uint8_t *str)
+{
+    uint16_t num = 0;
+    while (*str >= '0' && *str <= '9')  // 遍历数字字符
+    {
+        num = num * 10 + (*str - '0');  // 累加成整数
+        str++;
+    }
+    return num;
+}
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 /* USER CODE END 4 */
 
 /**
@@ -335,4 +394,3 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
-

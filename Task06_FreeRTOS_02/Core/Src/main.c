@@ -88,7 +88,6 @@ void vPWMTask(void *pvParameters) {
 		if(xQueueReceive(xParamQueue, &MAXCCRX, 0) == pdTRUE) {
 		CCRX = 0;	//每次接受就重启一下
 		Direction = 0;	
-		printf("Received MAXCCRX=%d\n", MAXCCRX);
 }
 		if(CCRX==MAXCCRX && Direction==0) Direction=1;
 		if(CCRX==0 && Direction==1) Direction=0;
@@ -115,9 +114,7 @@ void vUARTTask(void *pvParameters) {			//UART任务
     while(1) {
         if (xQueueReceive(xUartQueue, UART_QueneMessage, portMAX_DELAY) == pdPASS) {
             // 直接把数字字符串转成整数
-						printf("xUartQueue is Receive\n");
             bright = str2int(UART_QueneMessage);
-						printf("Received bright=%d\n", bright);
 
             // 发送到亮度队列
             xQueueSend(xParamQueue, &bright, 0);
@@ -126,9 +123,7 @@ void vUARTTask(void *pvParameters) {			//UART任务
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void vMPU6050Task(void *pvParameters) {
-	float accel[3], gyro[3];			//角速度 加速度
-	float pitch,roll,yaw;
+void vMPU6050INIT(void *pvParameters) {
 	int ret = 0;
 	vTaskDelay(pdMS_TO_TICKS(5000));
 	printf("MPU6050 initing......\n");
@@ -136,9 +131,14 @@ void vMPU6050Task(void *pvParameters) {
 		ret = MPU6050_DMP_init();
 	}while(ret);
 	if(MPU6050_DMP_init()==0) printf("MPU6050 init success!\n");
-
+	vTaskDelete(NULL);
+}
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void vMPU6050Task(void *pvParameters) {
+	float accel[3], gyro[3];			//角速度 加速度
+	float pitch,roll,yaw;
 	uint8_t Check_MODE = 0;				//查阅模式 0为六轴 1为欧拉角
-
 	TickType_t xLastWakeTime;  // 存储上一次唤醒时间
 	xLastWakeTime = xTaskGetTickCount();  // 初始化：获取当前系统节拍数
 	
@@ -203,6 +203,7 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
+
 //////////////////////////////////////////////////////////DMA初始化//////////////////////////////////////////////////////////////
 		HAL_UARTEx_ReceiveToIdle_DMA(&huart1,Unsure_Message,sizeof(Unsure_Message));
 	__HAL_DMA_DISABLE_IT(&hdma_usart1_rx,DMA_IT_HT);
@@ -212,6 +213,7 @@ int main(void)
 		TaskHandle_t PWM_TaskHandle = NULL;
 		TaskHandle_t UART_TaskHandle = NULL;
 		TaskHandle_t MPU6050_TaskHandle = NULL;
+		TaskHandle_t MPU6050INIT_TaskHandle = NULL;
 		xUartQueue  = xQueueCreate(10, sizeof(Unsure_Message));
     xParamQueue = xQueueCreate(10, sizeof(uint16_t));
 
@@ -225,7 +227,7 @@ int main(void)
         1,              // 优先级1
         &PWM_TaskHandle          
     );
-	xTaskCreate(	
+		xTaskCreate(	
         vUARTTask,       // 任务函数
         "UART",    // 任务名称
         128,            // 栈大小（128字=512字节）
@@ -233,13 +235,21 @@ int main(void)
         1,              // 优先级1
         &UART_TaskHandle           
     );
-			xTaskCreate(	
+		xTaskCreate(	
         vMPU6050Task,       // 任务函数
         "MPU6050",    // 任务名称
         128,            // 栈大小（128字=512字节）
         NULL,           // 不传递参数
-        2,              // 优先级1
+        1,              // 优先级1
         &MPU6050_TaskHandle         
+    );
+		xTaskCreate(	
+        vMPU6050INIT,       // 任务函数
+        "MPU6050INIT",    // 任务名称
+        128,            // 栈大小（128字=512字节）
+        NULL,           // 不传递参数
+        2,              // 优先级2
+        &MPU6050INIT_TaskHandle         
     );
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -307,7 +317,7 @@ void SystemClock_Config(void)
 /////////////////////////////////////////////////////DMA中断实现/////////////////////////////////////////////////////////////////////////////////////////////
 	void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart,uint16_t Size){
 			if(huart == &huart1){
-			printf("huart1 is Receive\n");
+			printf("Recieve DMA\n");
       BaseType_t xHigherPriorityTaskWoken = pdFALSE;
       xQueueSendFromISR(xUartQueue, Unsure_Message, &xHigherPriorityTaskWoken);		//有数据进来 就传到UART队列
 				
@@ -394,3 +404,4 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
+
